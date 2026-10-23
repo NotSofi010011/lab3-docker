@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Бронювання житла</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 760px; margin: 30px auto; padding: 0 16px; color: #222; }
+    h1 { margin-bottom: 8px; }
+    .status { padding: 10px; border-radius: 5px; margin-bottom: 20px; }
+    .healthy { background: #d4edda; }
+    .error { background: #f8d7da; }
+    .card { background: #f4f4f4; border-radius: 6px; padding: 12px; margin: 8px 0; }
+    .card b { display: block; }
+    form { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 12px 0; }
+    form .wide { grid-column: 1 / -1; }
+    label { display: flex; flex-direction: column; font-size: 14px; gap: 4px; }
+    input, select, button { padding: 9px; font-size: 15px; }
+    button { cursor: pointer; }
+    #msg { min-height: 24px; margin: 8px 0; font-weight: bold; }
+    #msg.ok { color: #1a7f37; }
+    #msg.err { color: #b42318; }
+    .cancelled { opacity: .5; text-decoration: line-through; }
+    .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  </style>
+</head>
+<body>
+  <h1>Бронювання короткострокової оренди</h1>
+  <div id="status" class="status">Перевірка API…</div>
+
+  <h2>Житло</h2>
+  <label>Місто
+    <select id="cityFilter"><option value="">Усі міста</option></select>
+  </label>
+  <div id="listings"></div>
+
+  <h2>Нове бронювання</h2>
+  <form id="bookingForm">
+    <label class="wide">Житло <select id="listingId" required></select></label>
+    <label>Ім’я гостя <input id="guestName" required></label>
+    <label>Кількість гостей <input id="guests" type="number" min="1" value="1" required></label>
+    <label>Заїзд <input id="checkIn" type="date" required></label>
+    <label>Виїзд <input id="checkOut" type="date" required></label>
+    <button class="wide" type="submit">Забронювати</button>
+  </form>
+  <div id="msg"></div>
+
+  <h2>Бронювання</h2>
+  <div id="bookings"></div>
+
+  <script>
+    let listings = [];
+
+    function el(tag, text, cls) {
+      const e = document.createElement(tag);
+      if (text !== undefined) e.textContent = text;
+      if (cls) e.className = cls;
+      return e;
+    }
+    function say(text, ok) {
+      const m = document.getElementById('msg');
+      m.textContent = text;
+      m.className = ok ? 'ok' : 'err';
+    }
+
+    async function checkHealth() {
+      const s = document.getElementById('status');
+      try {
+        const data = await (await fetch('/api/health')).json();
+        s.textContent = 'API Status: ' + data.status;
+        s.className = 'status healthy';
+      } catch (err) {
+        s.textContent = 'API Error: ' + err.message;
+        s.className = 'status error';
+      }
+    }
+
+    async function loadListings() {
+      const city = document.getElementById('cityFilter').value;
+      const res = await fetch('/api/listings' + (city ? '?city=' + encodeURIComponent(city) : ''));
+      const data = await res.json();
+      if (!city) {
+        listings = data;
+        const sel = document.getElementById('cityFilter');
+        [...new Set(data.map(l => l.city))].forEach(c => {
+          const o = el('option', c); o.value = c; sel.appendChild(o);
+        });
+        const pick = document.getElementById('listingId');
+        data.forEach(l => {
+          const o = el('option', `${l.title} — ${l.price_per_night} грн/ніч`); o.value = l.id; pick.appendChild(o);
+        });
+      }
+      const box = document.getElementById('listings');
+      box.replaceChildren(...data.map(l => {
+        const c = el('div', undefined, 'card');
+        c.append(el('b', l.title),
+          el('span', `${l.city} · ${l.price_per_night} грн/ніч · до ${l.max_guests} гостей · мін. ${l.min_nights} ніч.`));
+        return c;
+      }));
+    }
+
+    async function loadBookings() {
+      const data = await (await fetch('/api/bookings')).json();
+      const box = document.getElementById('bookings');
+      if (!data.length) { box.replaceChildren(el('p', 'Бронювань поки немає.')); return; }
+      box.replaceChildren(...data.map(b => {
+        const l = listings.find(x => x.id === b.listing_id);
+        const c = el('div', undefined, 'card' + (b.status === 'cancelled' ? ' cancelled' : ''));
+        const row = el('div', undefined, 'row');
+        const info = el('div');
+        info.append(el('b', `#${b.id} ${l ? l.title : 'Житло ' + b.listing_id}`),
+          el('span', `${b.guest_name}, ${b.guests} гост. · ${b.check_in} → ${b.check_out} · ${b.nights} ноч. · ${b.total_price} грн · ${b.status}`));
+        row.appendChild(info);
+        if (b.status === 'confirmed') {
+          const btn = el('button', 'Скасувати');
+          btn.onclick = () => cancelBooking(b.id);
+          row.appendChild(btn);
+        }
+        c.appendChild(row);
+        return c;
+      }));
+    }
+
+    async function cancelBooking(id) {
+      await fetch(`/api/bookings/${id}/cancel`, { method: 'POST' });
+      say('Бронювання скасовано', true);
+      loadBookings();
+    }
+
+    document.getElementById('cityFilter').onchange = loadListings;
+    document.getElementById('bookingForm').onsubmit = async (e) => {
+      e.preventDefault();
+      const body = {
+        listingId: Number(document.getElementById('listingId').value),
+        guestName: document.getElementById('guestName').value,
+        guests: Number(document.getElementById('guests').value),
+        checkIn: document.getElementById('checkIn').value,
+        checkOut: document.getElementById('checkOut').value,
+      };
+      const res = await fetch('/api/bookings', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (res.ok) { say(`Заброньовано! Вартість: ${data.total_price} грн`, true); loadBookings(); }
+      else say(data.error, false);
+    };
+
+    checkHealth();
+    loadListings().then(loadBookings);
+  </script>
+</body>
+</html>
